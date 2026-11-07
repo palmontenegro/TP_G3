@@ -1,0 +1,6 @@
+
+SUPABASE_HOST=aws-0-us-east-1.pooler.supabase.com
+SUPABASE_PORT=5432
+SUPABASE_DB=postgres
+SUPABASE_USER=postgres.snfurzjvbzgnmuqaplon
+SUPABASE_PASSWORD=METODOLOGIA

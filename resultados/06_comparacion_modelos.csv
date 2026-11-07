@@ -1,0 +1,4 @@
+modelo,R2_ajustado,AIC,MAPE_prueba_pct
+Lineal,0.1683,43367,13.64
+Cuadratico,0.7927,39715.2,5.59
+GAM,0.8293,39211.5,4.77
