@@ -1,9 +1,6 @@
-# =====================================================================
-# 02_prototipo_R.R
-# Flujo de análisis: lectura de datos_unificados -> gráficos exploratorios
-# -> división 80/20 -> ajuste del GAM -> diagnóstico y predicción.
-# Los gráficos se guardan en la carpeta resultados/
-# =====================================================================
+# Flujo de análisis: lectura de datos_unificados, gráficos exploratorios,
+# división cronológica 80/20, ajuste del GAM, diagnóstico y predicción.
+# Los gráficos se guardan en la carpeta resultados/.
 
 source("00_funciones.R")
 dir.create("resultados", showWarnings = FALSE)
@@ -16,7 +13,8 @@ cat("Región:", PARAM$region, "| Observaciones:", nrow(df),
     "| Período:", format(min(df$fecha)), "a", format(max(df$fecha)), "\n")
 print(summary(df[, c("demanda_mw", "temp_media_c")]))
 
-# ---- 1. Dispersión demanda vs. temperatura con curva suave ----
+# 1. Dispersión de la demanda en función de la temperatura, con curva suave
+# (todos los días, sin controles de día de la semana ni de feriado)
 g1 <- ggplot(df, aes(temp_media_c, demanda_mw)) +
   geom_point(alpha = 0.35, size = 1.2) +
   geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), colour = "firebrick") +
@@ -25,7 +23,9 @@ g1 <- ggplot(df, aes(temp_media_c, demanda_mw)) +
   theme_minimal(base_size = 12)
 ggsave("resultados/01_dispersion_demanda_temperatura.png", g1, width = 8, height = 5, dpi = 200)
 
-# ---- 2. Series temporales con eje secundario para la temperatura ----
+# 2. Series temporales de demanda y temperatura.
+# La temperatura se reescala al rango de la demanda para dibujarla sobre el mismo
+# gráfico; el eje secundario deshace esa transformación y muestra °C.
 coef <- diff(range(df$demanda_mw)) / diff(range(df$temp_media_c))
 dmin <- min(df$demanda_mw); tmin <- min(df$temp_media_c)
 g2 <- ggplot(df, aes(fecha)) +
@@ -38,7 +38,7 @@ g2 <- ggplot(df, aes(fecha)) +
   theme_minimal(base_size = 12)
 ggsave("resultados/02_series_temporales.png", g2, width = 10, height = 4.5, dpi = 200)
 
-# ---- 3. División cronológica 80/20 y ajuste del GAM ----
+# 3. División cronológica y ajuste del GAM sobre el conjunto de entrenamiento
 partes <- dividir_train_test(df)
 cat("\nEntrenamiento:", nrow(partes$train), "obs (",
     format(min(partes$train$fecha)), "a", format(max(partes$train$fecha)), ")\n")
@@ -49,11 +49,12 @@ modelo <- ajustar_gam(partes$train)
 cat("\n===== Resumen del GAM (conjunto de entrenamiento) =====\n")
 print(summary(modelo))
 
+# Diagnóstico de residuos y de la suficiencia de la base del spline
 png("resultados/03_diagnostico_gam.png", width = 1400, height = 1000, res = 150)
 par(mfrow = c(2, 2)); gam.check(modelo); par(mfrow = c(1, 1))
 dev.off()
 
-# ---- 4. Curva ajustada con intervalo de confianza ----
+# 4. Curva ajustada con intervalo de confianza del 95 % (±1,96 errores estándar)
 grilla <- seq(min(partes$train$temp_media_c), max(partes$train$temp_media_c), by = 0.1)
 curva  <- curva_gam(modelo, grilla)
 g4 <- ggplot() +
@@ -66,7 +67,7 @@ g4 <- ggplot() +
   theme_minimal(base_size = 12)
 ggsave("resultados/04_curva_gam.png", g4, width = 8, height = 5, dpi = 200)
 
-# ---- 5. Predicción sobre el conjunto de prueba ----
+# 5. Predicción sobre el conjunto de prueba (datos no usados en el ajuste)
 res_P <- calcular_P(modelo, partes$test)
 cat(sprintf("\nMAPE sobre el conjunto de prueba: %.2f %%\n", res_P$mape))
 

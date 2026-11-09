@@ -1,10 +1,7 @@
-# =====================================================================
-# 03_evaluacion_R.R
-# Evaluación del diseño: calcula A, P, E y T, la eficiencia
-#   Eficiencia = 0,25*A + 0,35*P + 0,25*E + 0,15*T
-# y la compara con el umbral 0,70. Guarda el resultado en la tabla
-# 'evaluaciones' y en resultados/evaluacion.csv
-# =====================================================================
+# Evaluación del diseño: calcula A, P, E y T y la eficiencia
+#   Eficiencia = 0,25 A + 0,35 P + 0,25 E + 0,15 T
+# y la compara con el umbral de 0,70. El resultado se guarda en la tabla
+# evaluaciones de la base y en resultados/evaluacion.csv.
 
 source("00_funciones.R")
 dir.create("resultados", showWarnings = FALSE)
@@ -12,14 +9,13 @@ set.seed(PARAM$semilla)
 
 con <- conectar_db()
 
-# ---- A, P y E: una única ejecución del flujo ----
+# A, P y E se determinan en una única ejecución del flujo
 res <- ejecutar_flujo(con, PARAM$region)
 
-# ---- T: 5 repeticiones del flujo completo (consulta a la base incluida) ----
+# T se mide repitiendo el flujo completo (incluida la consulta a la base)
 cat("Midiendo el tiempo de ejecución (", PARAM$repeticiones_t, "repeticiones)...\n")
 tt <- medir_T(con, PARAM$region, PARAM$repeticiones_t)
 
-# ---- Eficiencia ----
 efi    <- calcular_eficiencia(res$A, res$P, res$E, tt$T_val)
 cumple <- efi >= PARAM$umbral
 
@@ -42,10 +38,10 @@ cat(sprintf("Tiempos (s): %s | promedio = %.2f s\n",
             paste(round(tt$tiempos, 2), collapse = ", "), tt$t_prom))
 cat(sprintf("\nEFICIENCIA = %.4f  (umbral %.2f)  ->  %s\n", efi, PARAM$umbral,
             if (cumple) "CUMPLE la condición" else "NO cumple la condición"))
+# Con P = 0 la eficiencia máxima posible es 0,65, inferior al umbral
 if (res$P == 0) cat("Atención: P = 0 (MAPE >= 10 %), la eficiencia no puede alcanzar el umbral.\n")
 cat("=================================================================\n")
 
-# ---- Registro en la base y en CSV ----
 registrar_evaluacion(con, PARAM$region, res$A, res$P, res$E, tt$T_val,
                      res$mape, tt$t_prom,
                      notas = paste("Ejecución", format(Sys.time(), "%Y-%m-%d %H:%M")))

@@ -1,14 +1,10 @@
-# =====================================================================
-# 06_resultados_hipotesis.R
-# Responde al OBJETIVO y a la HIPÓTESIS del informe con los datos reales:
-#   - ¿Hay no linealidad? (GAM vs. modelo lineal)
-#   - ¿Forma de "U"? ¿Dónde está el mínimo (zona de confort)?
-#   - Aumento de demanda respecto de un día base de 17 °C (comparable con
-#     Martínez Villa, 2026: +20,8 % a 24-25 °C y +10,1 % a 10-11 °C)
-#   - Impacto marginal (MW/°C) en calor extremo (> p90) y frío extremo (< p10)
-#     con intervalos de confianza por simulación del posterior del GAM.
-# Ejecutar con PARAM$region apuntando a la región REAL.
-# =====================================================================
+
+# Pruebas de contrastación 1 y 2 del informe, con los datos reales:
+#   Prueba 1: forma funcional (lineal vs. cuadrático vs. GAM).
+#   Prueba 2: forma de "U", temperatura de mínima demanda, variación respecto de un
+#             día base de 17 °C e impacto marginal (MW/°C) en calor y frío extremos,
+#             con intervalos por simulación de la distribución posterior del GAM.
+# También calcula A y P de los tres modelos (insumo parcial de la Prueba 4).
 
 source("00_funciones.R")
 dir.create("resultados", showWarnings = FALSE)
@@ -18,18 +14,18 @@ con <- conectar_db()
 df  <- leer_datos(con)
 dbDisconnect(con)
 
-# Se ajusta con la serie completa (estimación de la relación, no evaluación)
+# Ajuste sobre la serie completa: se usa para estimar la relación, no para evaluar el modelo
 m     <- ajustar_gam(df)
 m_lin <- gam(demanda_mw ~ temp_media_c + dia_semana + es_feriado, data = df, method = "REML")
 
+# Prueba 1: ¿la relación es no lineal?
 cat("\n===== 1. ¿Relación no lineal? =====\n")
 print(summary(m)$s.table)
 cat("\nComparación modelo lineal vs. GAM (test F):\n")
 print(anova(m_lin, m, test = "F"))
 
-# ---- Comparación de modelos: lineal vs. cuadrático vs. GAM ----
-# Justifica por qué se usa un GAM. Los tres modelos llevan los mismos controles
-# (día de la semana y feriado) y se ajustan con el 80 % inicial y se evalúan con el 20 % final.
+# Comparación de los tres modelos con los mismos controles (día de la semana y feriado):
+# ajuste con el 80 % inicial y evaluación con el 20 % final
 partes <- dividir_train_test(df)
 modelos <- list(
   Lineal     = lm(demanda_mw ~ temp_media_c + dia_semana + es_feriado, data = partes$train),
@@ -71,47 +67,50 @@ g_cmp <- ggplot() +
   theme_minimal(base_size = 12)
 ggsave("resultados/06_comparacion_modelos.png", g_cmp, width = 9, height = 5.5, dpi = 200)
 
-# ---- Curva y zona de confort ----
+# Prueba 2: curva estimada y temperatura de mínima demanda (zona de confort)
 grilla <- seq(min(df$temp_media_c), max(df$temp_media_c), by = 0.1)
 curva  <- curva_gam(m, grilla)
 t_min  <- curva$temp[which.min(curva$y)]
 cat(sprintf("\n===== 2. Mínimo de demanda (zona de confort) en %.1f °C =====\n", t_min))
 
-# ---- Aumento porcentual respecto del día base de 17 °C ----
+# Variación porcentual de la demanda respecto de un día base de 17 °C
 pct_vs_base <- function(temps, base = 17) {
   y <- curva_gam(m, c(base, temps))$y
   100 * (y[-1] / y[1] - 1)
 }
 cat("\n===== 3. Variación de demanda respecto de un día base de 17 °C =====\n")
-pts <- c(10.5, 24.5)
+pts <- c(10.5, 24.5)   # valores centrales de los rangos de Martinez Villa (2026)
 res_pct <- data.frame(temperatura_c = pts, variacion_pct = round(pct_vs_base(pts), 1))
 print(res_pct, row.names = FALSE)
-cat("(Referencia de la bibliografía: +10,1 % a 10-11 °C y +20,8 % a 24-25 °C, AMBA, Martínez Villa 2026)\n")
+cat("(Bibliografía: +10,1 % a 10-11 °C y +20,8 % a 24-25 °C, AMBA, Martinez Villa 2026)\n")
 
-# ---- Impacto marginal en extremos con IC por simulación ----
+# Impacto marginal en los extremos térmicos (percentiles 10 y 90 de la serie completa).
+# Se simulan 2.000 curvas a partir de la distribución posterior de los coeficientes del GAM;
+# la pendiente de cada curva es el cambio de demanda sobre el cambio de temperatura en cada extremo.
 p10 <- quantile(df$temp_media_c, 0.10, names = FALSE)
 p90 <- quantile(df$temp_media_c, 0.90, names = FALSE)
 nd  <- data.frame(temp_media_c = grilla,
                   dia_semana = factor(PARAM$dia_ref, levels = DIAS), es_feriado = 0L)
 Xp   <- predict(m, newdata = nd, type = "lpmatrix")
-sims <- Xp %*% t(mgcv::rmvn(2000, coef(m), vcov(m)))      # curvas simuladas (grilla x 2000)
+sims <- Xp %*% t(mgcv::rmvn(2000, coef(m), vcov(m)))      # matriz grilla x 2000 curvas
 
 pend_sim <- function(idx) {
   i1 <- min(idx); i2 <- max(idx)
-  (sims[i2, ] - sims[i1, ]) / (grilla[i2] - grilla[i1])    # pendiente media, MW/°C
+  (sims[i2, ] - sims[i1, ]) / (grilla[i2] - grilla[i1])    # MW/°C
 }
 s_calor <- pend_sim(which(grilla > p90))
 s_frio  <- pend_sim(which(grilla < p10))
-ic <- function(x) round(quantile(x, c(0.025, 0.5, 0.975)), 1)
+ic <- function(x) round(quantile(x, c(0.025, 0.5, 0.975)), 1)   # IC 95 % y mediana
 
 cat(sprintf("\n===== 4. Impacto marginal (MW/°C) | p10 = %.1f °C, p90 = %.1f °C =====\n", p10, p90))
 cat("Calor extremo (> p90): "); print(ic(s_calor))
 cat("Frío extremo (< p10):  "); print(ic(s_frio))
 cat("\nRazón |calor| / |frío| (IC 95 %):\n"); print(round(quantile(s_calor / abs(s_frio), c(0.025, 0.5, 0.975)), 2))
+# Proporción de curvas simuladas que cumplen cada condición
 cat(sprintf("\nP(forma de U: pendiente de frío < 0 y de calor > 0) = %.3f\n", mean(s_frio < 0 & s_calor > 0)))
 cat(sprintf("P(sensibilidad en calor > sensibilidad en frío)      = %.3f\n", mean(s_calor > abs(s_frio))))
 
-# ---- Gráfico final ----
+# Gráfico final del informe (Figura 4)
 g <- ggplot(curva, aes(temp, y)) +
   geom_point(data = df, aes(temp_media_c, demanda_mw), alpha = 0.2, size = 0.8) +
   geom_ribbon(aes(ymin = y - 1.96 * se, ymax = y + 1.96 * se), fill = "firebrick", alpha = 0.25) +

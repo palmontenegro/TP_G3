@@ -1,10 +1,7 @@
--- =====================================================================
--- 01_schema_supabase.sql
--- Esquema de la base de datos del prototipo (PostgreSQL en Supabase)
--- Ejecutar UNA VEZ en Supabase: SQL Editor > New query > pegar > Run
--- =====================================================================
+-- Esquema de la base de datos del prototipo (PostgreSQL en Supabase).
+-- Se ejecuta una única vez: SQL Editor > New query > pegar > Run.
 
--- ---------- Tablas de datos de entrada ----------
+-- Tablas de datos de entrada
 
 CREATE TABLE IF NOT EXISTS estaciones_smn (
     id_estacion  TEXT PRIMARY KEY,
@@ -12,12 +9,14 @@ CREATE TABLE IF NOT EXISTS estaciones_smn (
     provincia    TEXT
 );
 
+-- Asigna una estación meteorológica de referencia a cada región
 CREATE TABLE IF NOT EXISTS regiones (
     region       TEXT PRIMARY KEY,
     descripcion  TEXT,
     id_estacion  TEXT NOT NULL REFERENCES estaciones_smn (id_estacion)
 );
 
+-- Demanda neta media diaria por región (MW). La clave primaria impide duplicados.
 CREATE TABLE IF NOT EXISTS demanda_cammesa (
     fecha        DATE    NOT NULL,
     region       TEXT    NOT NULL REFERENCES regiones (region),
@@ -25,6 +24,7 @@ CREATE TABLE IF NOT EXISTS demanda_cammesa (
     PRIMARY KEY (fecha, region)
 );
 
+-- Temperatura diaria por estación (°C). Las restricciones CHECK validan el dominio de los datos.
 CREATE TABLE IF NOT EXISTS temperatura_smn (
     fecha         DATE    NOT NULL,
     id_estacion   TEXT    NOT NULL REFERENCES estaciones_smn (id_estacion),
@@ -40,10 +40,9 @@ CREATE TABLE IF NOT EXISTS feriados (
     descripcion  TEXT
 );
 
--- ---------- Tabla de resultados de la evaluación del diseño ----------
--- La eficiencia y el cumplimiento del umbral se calculan en la propia base
--- con la ecuación de la Introducción: 0,25*A + 0,35*P + 0,25*E + 0,15*T >= 0,70
-
+-- Resultados de la evaluación del diseño: una fila por ejecución.
+-- Las columnas a, p, e, t son las variables de evaluación (entre 0 y 1);
+-- eficiencia y cumple_umbral se calculan con las ponderaciones y el umbral de la Introducción.
 CREATE TABLE IF NOT EXISTS evaluaciones (
     id_evaluacion    BIGSERIAL PRIMARY KEY,
     fecha_ejecucion  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,10 +60,9 @@ CREATE TABLE IF NOT EXISTS evaluaciones (
     notas            TEXT
 );
 
--- ---------- Vista que unifica demanda y temperatura ----------
--- Une por fecha y región (la región tiene asignada una estación de referencia)
--- y deriva: día de la semana, feriado, mes y estación del año (hemisferio sur).
-
+-- Vista que unifica demanda y temperatura por fecha y región
+-- (a través de la estación de referencia de cada región) y deriva
+-- día de la semana, condición de feriado, mes y estación del año (hemisferio sur).
 CREATE OR REPLACE VIEW datos_unificados AS
 SELECT
     d.fecha,
@@ -96,11 +94,9 @@ JOIN temperatura_smn t   ON t.id_estacion = r.id_estacion
                         AND t.fecha = d.fecha
 LEFT JOIN feriados f     ON f.fecha = d.fecha;
 
--- ---------- Seguridad (recomendado en Supabase) ----------
--- Supabase expone las tablas del esquema public por su API REST. Activar RLS
--- sin políticas bloquea el acceso con la clave pública; la conexión directa
--- de R (usuario postgres) no se ve afectada.
-
+-- Seguridad: Supabase expone las tablas del esquema public por su API REST.
+-- Activar RLS sin políticas bloquea el acceso con la clave pública; la conexión
+-- directa desde R (usuario postgres) no se ve afectada.
 ALTER TABLE estaciones_smn   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE regiones         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE demanda_cammesa  ENABLE ROW LEVEL SECURITY;

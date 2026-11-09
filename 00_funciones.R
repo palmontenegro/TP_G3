@@ -1,8 +1,5 @@
-# =====================================================================
-# 00_funciones.R
-# Parámetros del diseño y funciones compartidas por todos los scripts.
-# No se ejecuta solo: los otros scripts lo cargan con source("00_funciones.R")
-# =====================================================================
+# Parámetros del diseño y funciones compartidas por los scripts del flujo.
+# Se carga desde los demás scripts con source("00_funciones.R").
 
 suppressPackageStartupMessages({
   library(DBI)
@@ -14,35 +11,29 @@ suppressPackageStartupMessages({
   library(mgcv)
 })
 
-# ---------------------------------------------------------------------
-# PARÁMETROS DEL DISEÑO (coinciden con la Introducción del informe)
-# ---------------------------------------------------------------------
+# Parámetros del diseño (coinciden con la Introducción del informe)
 PARAM <- list(
-  # Región a analizar. Con la base de prueba: "PRUEBA_AMBA".
-  # Con datos reales: cambiar a la región que cargues (p. ej. "AMBA").
   region             = "GBA",
-  prop_entrenamiento = 0.80,                       # 80 % entrenamiento / 20 % prueba
-  mape_max           = 10,                         # MAPE (%) a partir del cual P = 0
-  t_max              = 300,                        # segundos a partir de los cuales T = 0
-  repeticiones_t     = 5,                          # repeticiones para medir T
+  prop_entrenamiento = 0.80,   # 80 % entrenamiento / 20 % prueba
+  mape_max           = 10,     # MAPE (%) a partir del cual P = 0
+  t_max              = 300,    # tiempo (s) a partir del cual T = 0
+  repeticiones_t     = 5,      # repeticiones para medir T
   pesos              = c(A = 0.25, P = 0.35, E = 0.25, T = 0.15),
-  umbral             = 0.70,                       # Eficiencia >= 0,70
-  dia_ref            = "Miercoles",                # día de referencia para dibujar la curva
+  umbral             = 0.70,   # condición de aceptación: Eficiencia >= 0,70
+  dia_ref            = "Miercoles",  # día hábil usado para dibujar la curva
   semilla            = 2026
 )
 
 DIAS <- c("Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo")
 
-# ---------------------------------------------------------------------
-# CONEXIÓN A SUPABASE (cifrada por SSL, credenciales en variables de entorno)
-# ---------------------------------------------------------------------
+# Conexión a Supabase (SSL); las credenciales se leen de variables de entorno
 conectar_db <- function() {
   vars <- c("SUPABASE_HOST", "SUPABASE_PORT", "SUPABASE_DB",
             "SUPABASE_USER", "SUPABASE_PASSWORD")
   faltan <- vars[Sys.getenv(vars) == ""]
   if (length(faltan) > 0) {
     stop("Faltan variables de entorno: ", paste(faltan, collapse = ", "),
-         ". Revisá el archivo .Renviron (ver README) y reiniciá R.")
+         ". Revisar el archivo .Renviron (ver README) y reiniciar R.")
   }
   dbConnect(
     RPostgres::Postgres(),
@@ -55,9 +46,7 @@ conectar_db <- function() {
   )
 }
 
-# ---------------------------------------------------------------------
-# LECTURA DE LA VISTA datos_unificados
-# ---------------------------------------------------------------------
+# Lee la vista datos_unificados (demanda y temperatura unidas por fecha y región)
 leer_datos <- function(con, region = PARAM$region) {
   sql <- "SELECT fecha, region, demanda_mw, temp_media_c, temp_max_c, temp_min_c,
                  dia_semana, es_feriado, mes, estacion
@@ -67,7 +56,7 @@ leer_datos <- function(con, region = PARAM$region) {
   df <- dbGetQuery(con, sql, params = list(region))
   if (nrow(df) == 0) {
     stop("La vista datos_unificados no devolvió filas para la región '", region,
-         "'. Revisá PARAM$region en 00_funciones.R y que haya datos de demanda y temperatura para las mismas fechas.")
+         "'. Revisar PARAM$region y que existan datos de demanda y temperatura para las mismas fechas.")
   }
   df |>
     mutate(
@@ -82,9 +71,7 @@ leer_datos <- function(con, region = PARAM$region) {
     arrange(fecha)
 }
 
-# ---------------------------------------------------------------------
-# DIVISIÓN CRONOLÓGICA ENTRENAMIENTO / PRUEBA (80 % / 20 %)
-# ---------------------------------------------------------------------
+# División cronológica (no aleatoria): el conjunto de prueba es posterior al de entrenamiento
 dividir_train_test <- function(df, prop = PARAM$prop_entrenamiento) {
   df <- df |> arrange(fecha)
   n_train <- floor(nrow(df) * prop)
@@ -94,16 +81,14 @@ dividir_train_test <- function(df, prop = PARAM$prop_entrenamiento) {
   )
 }
 
-# ---------------------------------------------------------------------
-# MODELO: demanda_mw ~ s(temp_media_c) + dia_semana + es_feriado
-# GAM gaussiano, spline de regresión penalizado, estimación REML
-# ---------------------------------------------------------------------
+# Modelo: demanda = s(temperatura) + día de la semana + feriado
+# GAM gaussiano; la curva de temperatura es un spline penalizado estimado por REML
 ajustar_gam <- function(df) {
   gam(demanda_mw ~ s(temp_media_c) + dia_semana + es_feriado,
       data = df, family = gaussian(), method = "REML")
 }
 
-# Curva ajustada sobre una grilla de temperatura (día de referencia, no feriado)
+# Curva ajustada sobre una grilla de temperatura, para un día hábil no feriado
 curva_gam <- function(modelo, grilla, ref_dia = PARAM$dia_ref) {
   nd <- data.frame(
     temp_media_c = grilla,
@@ -114,33 +99,26 @@ curva_gam <- function(modelo, grilla, ref_dia = PARAM$dia_ref) {
   data.frame(temp = grilla, y = as.numeric(p$fit), se = as.numeric(p$se.fit))
 }
 
-# ---------------------------------------------------------------------
-# VARIABLE A: ajuste  ->  A = max(0, R2 ajustado) en entrenamiento
-# ---------------------------------------------------------------------
+# Variable A (ajuste): A = max(0, R² ajustado) sobre el conjunto de entrenamiento
 calcular_A <- function(modelo) {
   max(0, summary(modelo)$r.sq)
 }
 
-# ---------------------------------------------------------------------
-# VARIABLE P: precisión predictiva  ->  P = max(0, 1 - MAPE/10 %)
-# ---------------------------------------------------------------------
+# Variable P (precisión predictiva): P = max(0, 1 - MAPE / mape_max) sobre el conjunto de prueba
 calcular_P <- function(modelo, test) {
   pred <- as.numeric(predict(modelo, newdata = test))
   mape <- mean(abs(test$demanda_mw - pred) / test$demanda_mw) * 100
   list(P = max(0, 1 - mape / PARAM$mape_max), mape = mape, pred = pred)
 }
 
-# ---------------------------------------------------------------------
-# VARIABLE E: estabilidad de la estimación
-# Serie completa partida en meses pares / impares; pendiente media de la
-# curva en calor (> percentil 90) y en frío (< percentil 10) por subconjunto.
-# ---------------------------------------------------------------------
+# Pendiente media de la curva (MW/°C) por diferencias finitas, en calor (> p90) o frío (< p10)
 pendiente_extremo <- function(curva, tipo, p10, p90) {
   sub <- if (tipo == "calor") curva[curva$temp > p90, ] else curva[curva$temp < p10, ]
   if (nrow(sub) < 3) return(NA_real_)
-  mean(diff(sub$y) / diff(sub$temp))        # diferencias finitas, MW/°C
+  mean(diff(sub$y) / diff(sub$temp))
 }
 
+# Similitud entre dos pendientes: 1 si son iguales, 0 si difieren en el máximo o tienen signo opuesto
 similitud <- function(s1, s2) {
   if (anyNA(c(s1, s2))) return(0)
   den <- max(abs(s1), abs(s2))
@@ -148,15 +126,19 @@ similitud <- function(s1, s2) {
   max(0, 1 - abs(s1 - s2) / den)
 }
 
+# Variable E (estabilidad): se ajusta el modelo por separado en meses pares e impares
+# (ambos subconjuntos cubren todas las estaciones) y se compara la pendiente en
+# calor y en frío entre ambos; E es el promedio de las dos similitudes.
+# Los percentiles 10 y 90 se calculan sobre la serie completa.
 calcular_E <- function(df) {
   p10 <- quantile(df$temp_media_c, 0.10, names = FALSE)
   p90 <- quantile(df$temp_media_c, 0.90, names = FALSE)
-
+  
   grupos <- list(
     pares   = df[month(df$fecha) %% 2 == 0, ],
     impares = df[month(df$fecha) %% 2 == 1, ]
   )
-
+  
   pend <- sapply(grupos, function(g) {
     m      <- ajustar_gam(g)
     grilla <- seq(min(g$temp_media_c), max(g$temp_media_c), by = 0.1)
@@ -164,22 +146,20 @@ calcular_E <- function(df) {
     c(calor = pendiente_extremo(curva, "calor", p10, p90),
       frio  = pendiente_extremo(curva, "frio",  p10, p90))
   })
-
+  
   E_calor <- similitud(pend["calor", 1], pend["calor", 2])
   E_frio  <- similitud(pend["frio",  1], pend["frio",  2])
   list(E = (E_calor + E_frio) / 2, E_calor = E_calor, E_frio = E_frio,
        pendientes = pend, p10 = p10, p90 = p90)
 }
 
-# ---------------------------------------------------------------------
-# FLUJO COMPLETO: lectura -> división -> ajuste -> A, P, E
-# (esto es lo que se cronometra para la variable T)
-# ---------------------------------------------------------------------
+# Flujo completo: lectura -> división -> ajuste -> A, P, E
+# Es el tramo que se cronometra para la variable T
 ejecutar_flujo <- function(con, region = PARAM$region) {
   df     <- leer_datos(con, region)
   partes <- dividir_train_test(df)
   modelo <- ajustar_gam(partes$train)
-  A <- calcular_A(modelo)
+  A  <- calcular_A(modelo)
   Pr <- calcular_P(modelo, partes$test)
   Er <- calcular_E(df)
   list(A = A, P = Pr$P, mape = Pr$mape, pred_test = Pr$pred,
@@ -187,9 +167,7 @@ ejecutar_flujo <- function(con, region = PARAM$region) {
        modelo = modelo, df = df, train = partes$train, test = partes$test)
 }
 
-# ---------------------------------------------------------------------
-# VARIABLE T: tiempo de ejecución  ->  T = max(0, 1 - t / 300 s)
-# ---------------------------------------------------------------------
+# Variable T (tiempo de ejecución): T = max(0, 1 - t / t_max), con t = promedio de las repeticiones
 medir_T <- function(con, region = PARAM$region, repeticiones = PARAM$repeticiones_t) {
   tiempos <- numeric(repeticiones)
   for (i in seq_len(repeticiones)) {
@@ -199,13 +177,12 @@ medir_T <- function(con, region = PARAM$region, repeticiones = PARAM$repeticione
   list(T_val = max(0, 1 - t_prom / PARAM$t_max), t_prom = t_prom, tiempos = tiempos)
 }
 
-# ---------------------------------------------------------------------
-# EFICIENCIA = 0,25*A + 0,35*P + 0,25*E + 0,15*T
-# ---------------------------------------------------------------------
+# Eficiencia = 0,25 A + 0,35 P + 0,25 E + 0,15 T
 calcular_eficiencia <- function(A, P, E, T_val) {
   sum(PARAM$pesos * c(A, P, E, T_val))
 }
 
+# Guarda en la tabla evaluaciones los valores de cada ejecución
 registrar_evaluacion <- function(con, region, A, P, E, T_val, mape, t_prom, notas = "") {
   dbExecute(
     con,
@@ -215,23 +192,21 @@ registrar_evaluacion <- function(con, region, A, P, E, T_val, mape, t_prom, nota
   )
 }
 
-# ---------------------------------------------------------------------
-# CARGA A LA BASE (inserta o actualiza; evita duplicados por clave primaria)
-# Requiere conexión directa o "session pooler" (puerto 5432) por la tabla temporal.
-# ---------------------------------------------------------------------
+# Carga a la base: inserta o actualiza según la clave primaria (sin duplicados).
+# Usa una tabla temporal, por lo que requiere conexión directa o session pooler (puerto 5432).
 upsert_tabla <- function(con, df, tabla, claves) {
   df <- df[!duplicated(df[claves]), ]
   stage <- paste0("stg_", tabla)
   q <- function(x) as.character(dbQuoteIdentifier(con, x))
   dbWriteTable(con, stage, df, temporary = TRUE, overwrite = TRUE)
-
+  
   cols    <- names(df)
   noclave <- setdiff(cols, claves)
   accion  <- if (length(noclave) > 0) {
     paste0("DO UPDATE SET ",
            paste(sprintf("%s = EXCLUDED.%s", q(noclave), q(noclave)), collapse = ", "))
   } else "DO NOTHING"
-
+  
   sql <- sprintf(
     "INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT (%s) %s",
     q(tabla), paste(q(cols), collapse = ", "), paste(q(cols), collapse = ", "),
